@@ -15,12 +15,14 @@ logger = get_logger(__name__)
 PST_TIME_ZONE = 'America/Los_Angeles'
 BELLEVUE_BADMINTON_CLUB_ORG_ID = 7031
 CLUB_OPENING_HOURS = (6, 22)  # open, close hour
+COURT_BOOKINGS_URL = 'https://memberschedulers.courtreserve.com/SchedulerApi/ReadExpandedApi'
 
-court_bookings_url = 'https://memberschedulers.courtreserve.com/SchedulerApi/ReadExpandedApi'
 
-
-def get_headers():
-    return {
+############################################################################################
+# Fetch data
+############################################################################################
+def fetch_court_times_data(court_date: datetime):
+    headers = {
         'accept': '*/*',
         'accept-language': 'en-US,en;q=0.9',
         'origin': 'https://app.courtreserve.com',
@@ -34,11 +36,8 @@ def get_headers():
         'sec-fetch-site': 'same-site',
         'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     }
-
-
-def get_request_params(court_date: datetime):
     utc_datetime = court_date.astimezone(pytz.utc)
-    return {
+    params = {
         'id': str(BELLEVUE_BADMINTON_CLUB_ORG_ID),
         'uiCulture': 'en-US',
         'sort': '',
@@ -62,12 +61,9 @@ def get_request_params(court_date: datetime):
             'HideEmbedCodeReservationDetails': 'True'
         })
     }
-
-
-def fetch_court_times_data(court_date: datetime):
-    get_url = f"{court_bookings_url}?{urllib.parse.urlencode(get_request_params(court_date))}"
+    get_url = f"{COURT_BOOKINGS_URL}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(get_url,
-                                 headers=get_headers())
+                                 headers=headers)
     with urllib.request.urlopen(req) as response:
         encoding = response.info().get_content_charset('utf-8')
         data = response.read()
@@ -109,19 +105,6 @@ def get_available_court_times_by_location(court_date: datetime) -> dict:
     return available_court_times_by_location
 
 
-def get_datetime_by_hour(date: datetime, hour: int, timezone: str):
-    return pytz.timezone(timezone).localize(datetime.combine(date, time(hour=hour)))
-
-
-def generate_30min_intervals(start_time: datetime, end_time: datetime):
-    intervals = []
-    current_time = start_time
-    while current_time < end_time:
-        intervals.append(current_time)
-        current_time += timedelta(minutes=30)
-    return intervals
-
-
 def get_court_location_and_number(item: dict):
     space_delimited_court_label = item["CourtLabel"].split(' ')
     court_location = space_delimited_court_label[0]
@@ -142,6 +125,35 @@ def get_reserved_court_start_end_times(item: dict):
     return start_dt_utc.astimezone(pst), end_dt_utc.astimezone(pst)
 
 
+############################################################################################
+# Streamlit Data Refreshes
+############################################################################################
+def update_compact_view_available_court_times():
+    if not st.session_state.df_by_location:
+        return
+
+    filtered_locations = st.session_state.locations_filter if st.session_state.locations_filter \
+        else st.session_state.bbc_locations
+
+    start_time = st.session_state.time_range_filter[0]
+    end_time = st.session_state.time_range_filter[1]
+
+    logger.info(f"Creating a compact view for {filtered_locations}, from {start_time} to {end_time}.")
+    intervals = pd.date_range(start=start_time, end=end_time, freq='30min').strftime('%I:%M %p')
+    compact_view_df = pd.DataFrame(index=intervals, columns=sorted(filtered_locations))
+    for location in filtered_locations:
+        single_location_df = st.session_state.df_by_location[location]
+        for index in compact_view_df.index:
+            available_courts = []
+            for court_number in single_location_df.columns:
+                if not pd.isnull(single_location_df.loc[index, court_number]):
+                    available_courts.append(court_number)
+
+            compact_view_df.at[index, location] = available_courts
+
+    st.session_state.compact_view_df = compact_view_df
+
+
 def update_available_courts_for_date():
     court_date = st.session_state.date_input_datetime
     available_court_times_by_location = get_available_court_times_by_location(court_date)
@@ -159,13 +171,9 @@ def update_available_courts_for_date():
         st.session_state.df_by_location[location] = df
 
 
-def get_default_datetime():
-    current_datetime = datetime.now(pytz.timezone(PST_TIME_ZONE))
-    if current_datetime.time() > time(21, 30):  # Latest court time is 9:30 PM
-        return current_datetime + timedelta(days=1)
-    return current_datetime
-
-
+############################################################################################
+# UI Utils
+############################################################################################
 def get_duration_options(max_hours=4, increments_in_hours=0.5):
     duration_options = []
     for hour in range(1, int(max_hours / increments_in_hours) + 1):
@@ -203,42 +211,42 @@ def display_time_range_picker():
         st.session_state.time_range_filter = (start_datetime, end_datetime)
 
 
-def to_datetime_based_on_date_input(time: time):
-    return pytz.timezone(PST_TIME_ZONE).localize(datetime.combine(st.session_state.date_input_datetime, time))
-
-
-def update_compact_view_available_court_times():
-    if not st.session_state.df_by_location:
-        return
-
-    filtered_locations = st.session_state.locations_filter if st.session_state.locations_filter \
-        else st.session_state.bbc_locations
-
-    start_time = st.session_state.time_range_filter[0]
-    end_time = st.session_state.time_range_filter[1]
-
-    logger.info(f"Creating a compact view for {filtered_locations}, from {start_time} to {end_time}.")
-    intervals = pd.date_range(start=start_time, end=end_time, freq='30min').strftime('%I:%M %p')
-    compact_view_df = pd.DataFrame(index=intervals, columns=sorted(filtered_locations))
-    for location in filtered_locations:
-        single_location_df = st.session_state.df_by_location[location]
-        for index in compact_view_df.index:
-            available_courts = []
-            for court_number in single_location_df.columns:
-                if not pd.isnull(single_location_df.loc[index, court_number]):
-                    available_courts.append(court_number)
-
-            compact_view_df.at[index, location] = available_courts
-
-    st.session_state.compact_view_df = compact_view_df
-
-
-def get_default_date_range_filter() -> (datetime, datetime):
+############################################################################################
+# Util
+############################################################################################
+def get_default_date_range_filter() -> tuple[datetime, datetime]:
     start_time = get_datetime_by_hour(st.session_state.date_input_datetime, CLUB_OPENING_HOURS[0], PST_TIME_ZONE)
     end_time = get_datetime_by_hour(st.session_state.date_input_datetime, CLUB_OPENING_HOURS[1], PST_TIME_ZONE)
     return start_time, end_time
 
 
+def get_datetime_by_hour(date: datetime, hour: int, timezone: str):
+    return pytz.timezone(timezone).localize(datetime.combine(date, time(hour=hour)))
+
+
+def generate_30min_intervals(start_time: datetime, end_time: datetime):
+    intervals = []
+    current_time = start_time
+    while current_time < end_time:
+        intervals.append(current_time)
+        current_time += timedelta(minutes=30)
+    return intervals
+
+
+def get_default_datetime():
+    current_datetime = datetime.now(pytz.timezone(PST_TIME_ZONE))
+    if current_datetime.time() > time(21, 30):  # Latest court time is 9:30 PM
+        return current_datetime + timedelta(days=1)
+    return current_datetime
+
+
+def to_datetime_based_on_date_input(time: time):
+    return pytz.timezone(PST_TIME_ZONE).localize(datetime.combine(st.session_state.date_input_datetime, time))
+
+
+############################################################################################
+# Main App
+############################################################################################
 def main():
     try:
         st.set_page_config(page_title="BBC Court Finder", page_icon=":badminton_racquet_and_shuttlecock:", layout='wide')

@@ -110,7 +110,7 @@ def get_available_court_times_by_location(court_date: datetime) -> dict:
 
 
 def get_datetime_by_hour(date: datetime, hour: int, timezone: str):
-    return datetime.combine(date, time(hour=hour)).astimezone(pytz.timezone(timezone))
+    return pytz.timezone(timezone).localize(datetime.combine(date, time(hour=hour)))
 
 
 def generate_30min_intervals(start_time: datetime, end_time: datetime):
@@ -204,7 +204,7 @@ def display_time_range_picker():
 
 
 def to_datetime_based_on_date_input(time: time):
-    return datetime.combine(st.session_state.date_input_datetime, time)
+    return pytz.timezone(PST_TIME_ZONE).localize(datetime.combine(st.session_state.date_input_datetime, time))
 
 
 def update_compact_view_available_court_times():
@@ -272,8 +272,7 @@ def main():
         date_input = st.date_input("Date", current_datetime,
                                    max_value=current_datetime + timedelta(days=30))
 
-        st.session_state.date_input_datetime = (datetime.combine(date_input, datetime.min.time())
-                                                .astimezone(pytz.timezone(PST_TIME_ZONE)))
+        st.session_state.date_input_datetime = pytz.timezone(PST_TIME_ZONE).localize(datetime.combine(date_input, datetime.min.time()))
 
         display_time_range_picker()
 

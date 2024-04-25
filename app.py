@@ -81,7 +81,7 @@ def get_available_court_times_by_location(court_date: datetime) -> dict:
         reserved_court_times_by_location[court_location][court_number].append((get_reserved_court_start_end_times(item)))
         available_court_times_by_location[court_location][court_number] = []
 
-    available_30min_intervals = generate_30min_intervals(
+    available_30min_intervals = generate_30min_intervals_end_time_inclusive(
         get_datetime_by_hour(court_date, CLUB_OPENING_HOURS[0], PST_TIME_ZONE),
         get_datetime_by_hour(court_date, CLUB_OPENING_HOURS[1], PST_TIME_ZONE))
 
@@ -136,7 +136,7 @@ def update_compact_view_available_court_times():
     end_time = st.session_state.time_range_filter[1]
 
     logger.info(f"Creating a compact view for {st.session_state.locations_filter}, from {start_time} to {end_time}.")
-    intervals = pd.date_range(start=start_time, end=end_time, freq='30min').strftime('%I:%M %p')
+    intervals = pd.date_range(start=start_time, end=get_last_court_start_time(end_time), freq='30min').strftime('%I:%M %p')
     compact_view_df = pd.DataFrame(index=intervals, columns=sorted(st.session_state.locations_filter))
     for location in st.session_state.locations_filter:
         single_location_df = st.session_state.df_by_location[location]
@@ -156,11 +156,9 @@ def update_available_courts_for_date():
     available_court_times_by_location = get_available_court_times_by_location(court_date)
     st.session_state.bbc_locations = available_court_times_by_location.keys()
     for location, court_times_by_court_number in available_court_times_by_location.items():
-
         start_time, end_time = get_default_date_range_filter()
-        intervals = pd.date_range(start=start_time, end=end_time, freq='30min')
+        intervals = pd.date_range(start=start_time, end=get_last_court_start_time(end_time), freq='30min')
         df = pd.DataFrame(index=intervals, columns=sorted(court_times_by_court_number.keys()))
-
         for court, times in court_times_by_court_number.items():
             for start, end in times:
                 df.loc[(df.index >= start) & (df.index < end), court] = f"✓ {start.strftime('%I:%M %p')}"
@@ -228,10 +226,15 @@ def get_datetime_by_hour(date: datetime, hour: int, timezone: str):
     return pytz.timezone(timezone).localize(datetime.combine(date, time(hour=hour)))
 
 
-def generate_30min_intervals(start_time: datetime, end_time: datetime):
+def get_last_court_start_time(end_time: datetime):
+    if end_time == get_datetime_by_hour(st.session_state.date_input_datetime, CLUB_OPENING_HOURS[1], PST_TIME_ZONE):
+        return end_time - timedelta(minutes=30)
+
+
+def generate_30min_intervals_end_time_inclusive(start_time: datetime, end_time: datetime):
     intervals = []
     current_time = start_time
-    while current_time < end_time:
+    while current_time <= end_time:
         intervals.append(current_time)
         current_time += timedelta(minutes=30)
     return intervals

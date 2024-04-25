@@ -126,22 +126,19 @@ def get_reserved_court_start_end_times(item: dict):
 
 
 ############################################################################################
-# Streamlit Data Refreshes
+# UI Data Refreshes
 ############################################################################################
 def update_compact_view_available_court_times():
     if not st.session_state.df_by_location:
         return
 
-    filtered_locations = st.session_state.locations_filter if st.session_state.locations_filter \
-        else st.session_state.bbc_locations
-
     start_time = st.session_state.time_range_filter[0]
     end_time = st.session_state.time_range_filter[1]
 
-    logger.info(f"Creating a compact view for {filtered_locations}, from {start_time} to {end_time}.")
+    logger.info(f"Creating a compact view for {st.session_state.locations_filter}, from {start_time} to {end_time}.")
     intervals = pd.date_range(start=start_time, end=end_time, freq='30min').strftime('%I:%M %p')
-    compact_view_df = pd.DataFrame(index=intervals, columns=sorted(filtered_locations))
-    for location in filtered_locations:
+    compact_view_df = pd.DataFrame(index=intervals, columns=sorted(st.session_state.locations_filter))
+    for location in st.session_state.locations_filter:
         single_location_df = st.session_state.df_by_location[location]
         for index in compact_view_df.index:
             available_courts = []
@@ -183,30 +180,37 @@ def get_duration_options(max_hours=4, increments_in_hours=0.5):
 
 
 def display_time_range_picker():
-    opening_time = time(CLUB_OPENING_HOURS[0], 0)
-    closing_time = time(CLUB_OPENING_HOURS[1], 0)
-    opening_datetime = to_datetime_based_on_date_input(opening_time)
-    closing_datetime = to_datetime_based_on_date_input(closing_time)
-    st.session_state.time_range_filter = (opening_datetime, closing_datetime)
+    opening_time = get_time_by_hour(CLUB_OPENING_HOURS[0])
+    closing_time = get_time_by_hour(CLUB_OPENING_HOURS[1])
+    opening_datetime = to_pst_datetime(get_time_by_hour(CLUB_OPENING_HOURS[0]))
+    closing_datetime = to_pst_datetime(get_time_by_hour(CLUB_OPENING_HOURS[1]))
 
     col1, col2 = st.columns(2)
+
+    start_datetime = opening_datetime
+    end_datetime = closing_datetime
+
     with col1:
         start_time = st.time_input("Start Time", opening_time, step=timedelta(minutes=30))
+        start_datetime = to_pst_datetime(start_time)
     with col2:
-        end_time = st.time_input("End Time", closing_time, step=timedelta(minutes=30))
-        st.write("OR")
-        duration = st.selectbox("Duration (in hours)", options=get_duration_options(), index=None)
-
-    start_datetime = to_datetime_based_on_date_input(start_time)
-    end_datetime = to_datetime_based_on_date_input(end_time)
-    if duration:
-        st.session_state.disable_end_time_input = True
-        end_datetime = start_datetime + timedelta(hours=duration)
+        end_time_or_duration = st.radio("End time or Duration", ["End Time", "Duration"],
+                 captions=["Find open courts from [Start Time] to [End Time]",
+                           "Find open courts for [Duration] starting at [Start Time]"],
+                 horizontal=True, )
+        if end_time_or_duration == "End Time":
+            end_time = st.time_input("End Time", closing_time, step=timedelta(minutes=30))
+            end_datetime = to_pst_datetime(end_time)
+        else:
+            duration = st.selectbox("Duration (in hours)", options=get_duration_options(), index=None)
+            if duration:
+                end_datetime = start_datetime + timedelta(hours=duration)
 
     if end_datetime < start_datetime:
         st.warning("End time cannot be before start time. Please select a valid end time.")
-    elif start_datetime < opening_datetime or end_datetime > closing_datetime:  # check if end time is within range of opening hours.
-        st.warning(f"Please select times/duration that falls between {opening_time.strftime('%I:%M %p')} and {closing_time.strftime('%I:%M %p')}")
+    elif start_datetime < opening_datetime or end_datetime > closing_datetime:
+        st.warning(f"You're trying to look for courts from {get_formatted_time((start_datetime))} to {get_formatted_time(end_datetime)}. "
+                   f"Please select times/duration that falls between Opening ({get_formatted_time(opening_time)}) and Closing ({get_formatted_time(closing_time)}).")
     else:
         st.session_state.time_range_filter = (start_datetime, end_datetime)
 
@@ -240,8 +244,20 @@ def get_default_datetime():
     return current_datetime
 
 
-def to_datetime_based_on_date_input(time: time):
-    return pytz.timezone(PST_TIME_ZONE).localize(datetime.combine(st.session_state.date_input_datetime, time))
+def to_pst_datetime(utc_time: time):
+    return pytz.timezone(PST_TIME_ZONE).localize(datetime.combine(st.session_state.date_input_datetime, utc_time))
+
+
+def get_formatted_time(time_to_format):
+    return time_to_format.strftime('%I:%M %p')
+
+
+def get_formatted_time_by_hour(hour: int):
+    return get_formatted_time(get_time_by_hour(hour))
+
+
+def get_time_by_hour(hour: int):
+    return time(hour, 0)
 
 
 ############################################################################################
@@ -289,16 +305,30 @@ def main():
         if st.session_state.bbc_locations:
             st.session_state.locations_filter = st.multiselect("Locations",
                                                                placeholder="Choose a location",
-                                                               options=st.session_state.bbc_locations, default=[])
+                                                               options=st.session_state.bbc_locations,
+                                                               default=st.session_state.bbc_locations)
         st.divider()
 
         update_compact_view_available_court_times()
 
         if st.session_state.compact_view_df is not None:
+            st.write(f"### Available courts from {get_formatted_time(st.session_state.time_range_filter[0])} to "
+                     f"{get_formatted_time(st.session_state.time_range_filter[1])} for {', '.join(st.session_state.locations_filter)}")
+            with st.expander("How do I read this?"):
+                st.write("- This is a filtered/compact view of the tables in the next section showing court-availability across locations.")
+                st.write("- Each column is a BBC location.")
+                st.write("- Each row lists the courts that should be open for reservation on CourtReserve at that starting time.")
+
             st.dataframe(st.session_state.compact_view_df)
             st.divider()
 
         if st.session_state.df_by_location:
+            st.write(f"### Available courts from Opening ({get_formatted_time_by_hour(CLUB_OPENING_HOURS[0])}) to "
+                     f"Close ({get_formatted_time_by_hour(CLUB_OPENING_HOURS[1])})")
+            with st.expander("How do I read this?"):
+                st.write("- These are the non-filtered court-availability views that should resemble the CourtReserve page when you click into specific locations under 'Reservations'.")
+                st.write("- ✓ 07:00 AM - means a court should be open for reservation on CourtReserve with starting time at 07:00 AM.")
+                st.write("- None - means the court is not available to be reserved at that time slot.")
             for location, df in st.session_state.df_by_location.items():
                 st.write(f"#### :green[{location}]")
                 st.dataframe(df)

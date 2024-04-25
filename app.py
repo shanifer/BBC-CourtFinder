@@ -1,11 +1,12 @@
 import json
+import re
 import traceback
-import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, time
 
 import pandas as pd
 import pytz
+import requests
 import streamlit as st
 from streamlit.logger import get_logger
 
@@ -61,13 +62,18 @@ def fetch_court_times_data(court_date: datetime):
             'HideEmbedCodeReservationDetails': 'True'
         })
     }
-    get_url = f"{COURT_BOOKINGS_URL}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(get_url,
-                                 headers=headers)
-    with urllib.request.urlopen(req) as response:
-        encoding = response.info().get_content_charset('utf-8')
-        data = response.read()
-        return json.loads(data.decode(encoding))['Data']
+    encoded_params = requests.utils.to_key_val_list(params)
+    encoded_params = [f"{key}={value}" for key, value in encoded_params]
+    query_string = '&'.join(encoded_params)
+    get_url = f"{COURT_BOOKINGS_URL}?{query_string}"
+
+    try:
+        response = requests.get(get_url, headers=headers)
+        response.raise_for_status()  # Raise an exception for non-2xx status codes
+        return response.json()['Data']
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching court times data: {e}")
+        raise e
 
 
 def get_available_court_times_by_location(court_date: datetime) -> dict:
@@ -145,7 +151,6 @@ def update_compact_view_available_court_times():
             for court_number in single_location_df.columns:
                 if not pd.isnull(single_location_df.loc[index, court_number]):
                     available_courts.append(court_number)
-
             compact_view_df.at[index, location] = available_courts
 
     st.session_state.compact_view_df = compact_view_df
@@ -158,7 +163,7 @@ def update_available_courts_for_date():
     for location, court_times_by_court_number in available_court_times_by_location.items():
         start_time, end_time = get_default_date_range_filter()
         intervals = pd.date_range(start=start_time, end=get_last_court_start_time(end_time), freq='30min')
-        df = pd.DataFrame(index=intervals, columns=sorted(court_times_by_court_number.keys()))
+        df = pd.DataFrame(index=intervals, columns=sorted(court_times_by_court_number.keys(), key=get_court_number))
         for court, times in court_times_by_court_number.items():
             for start, end in times:
                 df.loc[(df.index >= start) & (df.index < end), court] = f"✓ {start.strftime('%I:%M %p')}"
@@ -261,6 +266,14 @@ def get_formatted_time_by_hour(hour: int):
 
 def get_time_by_hour(hour: int):
     return time(hour, 0)
+
+
+def get_court_number(court_name: str):
+    match = re.search(r'\d+', court_name)
+    if match:
+        return int(match.group())
+    else:
+        return float('inf')
 
 
 ############################################################################################

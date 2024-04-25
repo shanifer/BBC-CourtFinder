@@ -234,6 +234,7 @@ def get_datetime_by_hour(date: datetime, hour: int, timezone: str):
 def get_last_court_start_time(end_time: datetime):
     if end_time == get_datetime_by_hour(st.session_state.date_input_datetime, CLUB_OPENING_HOURS[1], PST_TIME_ZONE):
         return end_time - timedelta(minutes=30)
+    return end_time
 
 
 def generate_30min_intervals_end_time_inclusive(start_time: datetime, end_time: datetime):

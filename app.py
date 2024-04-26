@@ -62,13 +62,8 @@ def fetch_court_times_data(court_date: datetime):
             'HideEmbedCodeReservationDetails': 'True'
         })
     }
-    encoded_params = requests.utils.to_key_val_list(params)
-    encoded_params = [f"{key}={value}" for key, value in encoded_params]
-    query_string = '&'.join(encoded_params)
-    get_url = f"{COURT_BOOKINGS_URL}?{query_string}"
-
     try:
-        response = requests.get(get_url, headers=headers)
+        response = requests.get(COURT_BOOKINGS_URL, params=params, headers=headers)
         response.raise_for_status()  # Raise an exception for non-2xx status codes
         return response.json()['Data']
     except requests.exceptions.RequestException as e:
@@ -83,6 +78,13 @@ def get_available_court_times_by_location(court_date: datetime) -> dict:
     available_court_times_by_location = defaultdict(lambda: defaultdict(list))
 
     for item in court_times:
+        # Noticed there are these entries usually for Bellevue 10 and 11 that block 10 hours but don't actually
+        # show up on CourtReserve. These are the fields that seem to differentiate them from other entries (when all
+        # three fields are 'False').
+        # Revisit this if we notice that this is causing reserved slots to get dropped.
+        if not item["EventOnlineSignUpOff"] and not item["CanSignUpToEvent"] and not item["RegistrationOpen"]:
+            continue
+
         court_location, court_number = get_court_location_and_number(item)
         reserved_court_times_by_location[court_location][court_number].append((get_reserved_court_start_end_times(item)))
         available_court_times_by_location[court_location][court_number] = []

@@ -270,17 +270,42 @@ def display_time_range_picker():
     start_datetime = opening_datetime
     end_datetime = closing_datetime
 
-    with col1:
-        start_time = st.time_input("Start Time", opening_time, step=timedelta(minutes=30))
-        start_datetime = to_pst_datetime(start_time)
     with col2:
         end_time_or_duration = st.radio("End time or Duration", ["End Time", "Duration"],
                                         captions=["Find open courts from [Start Time] to [End Time]",
                                                   "Find open courts for [Duration] starting at [Start Time]"],
                                         horizontal=True)
+        # if end_time_or_duration == "End Time":
+        #     end_time = st.time_input("End Time", closing_time, step=timedelta(minutes=30))
+        #     end_datetime = to_pst_datetime(end_time)
+        # else:
+        #     duration = st.selectbox("Duration (in hours)", options=get_duration_options(), index=None)
+        #     if duration:
+        #         end_datetime = start_datetime + timedelta(hours=duration)
+
+    with col1:
+        st.write("Start Time")
+        # start_time = st.time_input("Start Time", opening_time, step=timedelta(minutes=30))
+        # start_datetime = to_pst_datetime(start_time)
+        start_hour_col, start_min_col, start_am_pm_col = st.columns(3)
+        with start_hour_col:
+            start_hour = st.number_input("Hour", min_value=1, max_value=12, value=opening_time.hour, key="start_hour")
+        with start_min_col:
+            start_minute = st.selectbox("Minute", [0, 30], index=0 if opening_time.minute == 0 else 1, key="start_min")
+        with start_am_pm_col:
+            start_am_pm = st.selectbox("AM/PM", ["AM", "PM"], index=0 if opening_time.hour < 12 else 1, key="start_ampm")
+        start_datetime = to_pst_datetime(time(start_hour if start_am_pm == "AM" else start_hour + 12, start_minute))
+
         if end_time_or_duration == "End Time":
-            end_time = st.time_input("End Time", closing_time, step=timedelta(minutes=30))
-            end_datetime = to_pst_datetime(end_time)
+            st.write("End Time")
+            end_hour_col, end_min_col, end_am_pm_col = st.columns(3)
+            with end_hour_col:
+                end_hour = st.number_input("Hour", min_value=1, max_value=12, value=closing_time.hour % 12, key="end_hour")
+            with end_min_col:
+                end_minute = st.selectbox("Minute", [0, 30], index=0 if closing_time.minute == 0 else 1, key="end_min")
+            with end_am_pm_col:
+                end_am_pm = st.selectbox("AM/PM", ["AM", "PM"], index=0 if closing_time.hour < 12 else 1, key="end_ampm")
+            end_datetime = to_pst_datetime(time(end_hour if end_am_pm == "AM" else end_hour + 12, end_minute))
         else:
             duration = st.selectbox("Duration (in hours)", options=get_duration_options(), index=None)
             if duration:

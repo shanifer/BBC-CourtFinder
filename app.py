@@ -429,7 +429,7 @@ def main():
 
             st.dataframe(st.session_state.compact_view_df,
                          column_config={reserve_button_column_name(location):
-                                            st.column_config.LinkColumn(label="",
+                                            st.column_config.LinkColumn(label=f"{location}",
                                                                         display_text="Reserve",
                                                                         help=f"This just links to the {location} Reservations page on CourtReserve. "
                                                                              f"You have to set the date in the calendar yourself and find the relevant slot to reserve.")

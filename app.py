@@ -3,6 +3,7 @@ import re
 import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta, time
+from enum import Enum
 
 import pandas as pd
 import pytz
@@ -12,11 +13,39 @@ from streamlit.logger import get_logger
 
 logger = get_logger(__name__)
 
-
 PST_TIME_ZONE = 'America/Los_Angeles'
 BELLEVUE_BADMINTON_CLUB_ORG_ID = 7031
 CLUB_OPENING_HOURS = (6, 22)  # open, close hour
-COURT_BOOKINGS_URL = 'https://memberschedulers.courtreserve.com/SchedulerApi/ReadExpandedApi'
+COURT_BOOKINGS_API_URL = 'https://memberschedulers.courtreserve.com/SchedulerApi/ReadExpandedApi'
+COURT_RESERVATIONS_LANDING_PAGE_URL = 'https://app.courtreserve.com/Online/Reservations/Bookings'
+
+
+class BBCLocation(Enum):
+    BELLEVUE = "Bellevue"
+    MUKILTEO = "Mukilteo"
+    RENTON = "Renton"
+    MUKILTEO_PICKLEBALL = "Mukilteo Pickleball"
+
+    @classmethod
+    def get_all_locations(cls):
+        return [location.value for location in BBCLocation]
+
+    @classmethod
+    def get_default_locations(cls):
+        return [location.value for location in BBCLocation if location != BBCLocation.MUKILTEO_PICKLEBALL]
+
+
+EARLY_ACCESS_PREFIX = "Early Access: "
+
+LOCATION_NAME_TO_ID_MAPPING = {
+    BBCLocation.BELLEVUE.value: 1476,
+    BBCLocation.MUKILTEO.value: 1478,
+    BBCLocation.RENTON.value: 1479,
+    EARLY_ACCESS_PREFIX + BBCLocation.BELLEVUE.value: 1503,
+    EARLY_ACCESS_PREFIX + BBCLocation.MUKILTEO.value: 1504,
+    EARLY_ACCESS_PREFIX + BBCLocation.RENTON.value: 1505,
+    BBCLocation.MUKILTEO_PICKLEBALL.value: 15460
+}
 
 
 ############################################################################################
@@ -63,7 +92,7 @@ def fetch_court_times_data(court_date: datetime):
         })
     }
     try:
-        response = requests.get(COURT_BOOKINGS_URL, params=params, headers=headers)
+        response = requests.get(COURT_BOOKINGS_API_URL, params=params, headers=headers)
         response.raise_for_status()  # Raise an exception for non-2xx status codes
         return response.json()['Data']
     except requests.exceptions.RequestException as e:
@@ -85,8 +114,9 @@ def get_available_court_times_by_location(court_date: datetime) -> dict:
         if not item["EventOnlineSignUpOff"] and not item["CanSignUpToEvent"] and not item["RegistrationOpen"]:
             continue
 
-        court_location, court_number = get_court_location_and_number(item)
-        reserved_court_times_by_location[court_location][court_number].append((get_reserved_court_start_end_times(item)))
+        court_location, court_number = get_court_location_and_name(item)
+        reserved_court_times_by_location[court_location][court_number].append(
+            (get_reserved_court_start_end_times(item)))
         available_court_times_by_location[court_location][court_number] = []
 
     available_30min_intervals = generate_30min_intervals_end_time_inclusive(
@@ -113,12 +143,16 @@ def get_available_court_times_by_location(court_date: datetime) -> dict:
     return available_court_times_by_location
 
 
-def get_court_location_and_number(item: dict):
-    space_delimited_court_label = item["CourtLabel"].split(' ')
-    court_location = space_delimited_court_label[0]
-    court_number = space_delimited_court_label[1]
-    court_label = f"Court {court_number}"
-    return court_location, f"{court_label}"
+def get_court_location_and_name(item: dict):
+    court_label = item["CourtLabel"]
+    space_delimited_court_label = court_label.split(' ')
+    if len(space_delimited_court_label) == 3 and "COACHING" not in court_label.upper():  # e.g. "Mukilteo Pickleball 12"
+        court_location = f"{space_delimited_court_label[0]} {space_delimited_court_label[1]}"
+        court_number = space_delimited_court_label[2]
+    else:
+        court_location = space_delimited_court_label[0]
+        court_number = space_delimited_court_label[1]
+    return court_location, f"Court {court_number}"
 
 
 def get_reserved_court_start_end_times(item: dict):
@@ -144,31 +178,39 @@ def update_compact_view_available_court_times():
     end_time = st.session_state.time_range_filter[1]
 
     logger.info(f"Creating a compact view for {st.session_state.locations_filter}, from {start_time} to {end_time}.")
-    intervals = pd.date_range(start=start_time, end=get_last_court_start_time(end_time), freq='30min').strftime('%I:%M %p')
-    compact_view_df = pd.DataFrame(index=intervals, columns=sorted(st.session_state.locations_filter))
+    intervals = pd.date_range(start=start_time, end=get_last_court_start_time(end_time), freq='30min')
+    columns = sorted(
+        st.session_state.locations_filter + [reserve_button_column_name(location) for location in st.session_state.locations_filter])
+
+    compact_view_df = pd.DataFrame(index=intervals, columns=columns)
     for location in st.session_state.locations_filter:
         single_location_df = st.session_state.df_by_location[location]
         for index in compact_view_df.index:
             available_courts = []
             for court_number in single_location_df.columns:
-                if not pd.isnull(single_location_df.loc[index, court_number]):
+                if not pd.isnull(single_location_df.loc[index.strftime('%I:%M %p'), court_number]):
                     available_courts.append(court_number)
+            if available_courts:
+                link = get_court_link(location, index)
+                compact_view_df.at[index, reserve_button_column_name(location)] = link
             compact_view_df.at[index, location] = available_courts
 
+    compact_view_df.index = compact_view_df.index.strftime('%I:%M %p')
     st.session_state.compact_view_df = compact_view_df
 
 
 def update_available_courts_for_date():
     court_date = st.session_state.date_input_datetime
     available_court_times_by_location = get_available_court_times_by_location(court_date)
-    st.session_state.bbc_locations = available_court_times_by_location.keys()
     for location, court_times_by_court_number in available_court_times_by_location.items():
         start_time, end_time = get_default_date_range_filter()
         intervals = pd.date_range(start=start_time, end=get_last_court_start_time(end_time), freq='30min')
         df = pd.DataFrame(index=intervals, columns=sorted(court_times_by_court_number.keys(), key=get_court_number))
         for court, times in court_times_by_court_number.items():
             for start, end in times:
-                df.loc[(df.index >= start) & (df.index < end), court] = f"✓ {start.strftime('%I:%M %p')}"
+                link = get_court_link(location, start)
+                text = f"✓ {start.strftime('%I:%M %p')}"
+                df.loc[(df.index >= start) & (df.index < end), court] = f"{link}&{text}"
         df.index = df.index.strftime('%I:%M %p')
         st.session_state.df_by_location[location] = df
 
@@ -176,6 +218,39 @@ def update_available_courts_for_date():
 ############################################################################################
 # UI Utils
 ############################################################################################
+def reserve_button_column_name(location: str):
+    return location + ' Reserve'
+
+
+def get_court_link(location_name: str, court_start: datetime):
+    try:
+        return get_bbc_court_reservation_page(get_location_id_by_name_and_start_hour(location_name, court_start))
+    except Exception as e:
+        logger.error(f"Unable to get a link for {location_name} - {type(e).__name__}: {str(e)}")
+        logger.error(traceback.format_exc())  # Print the full traceback
+
+
+def get_location_id_by_name_and_start_hour(location_name: str, court_start: datetime):
+    try:
+        # Check if it's Early Access
+        if ((court_start.weekday() < 5 and court_start.time() < time(9, 0) or  # Weekdays before 9AM
+             court_start.weekday() >= 6 and court_start.time() < time(8, 0)) and  # Weekends before 8AM
+                "Pickleball" not in location_name):
+            location_lookup_name = EARLY_ACCESS_PREFIX + location_name
+        else:
+            location_lookup_name = location_name
+        location_id = LOCATION_NAME_TO_ID_MAPPING[location_lookup_name]
+        return location_id
+    except KeyError as e:
+        logger.error(
+            f"Unable to get location id for {location_name}. We only have mappings for {LOCATION_NAME_TO_ID_MAPPING.keys()}.")
+        raise e
+
+
+def get_bbc_court_reservation_page(location_id: int):
+    return f"{COURT_RESERVATIONS_LANDING_PAGE_URL}/{BELLEVUE_BADMINTON_CLUB_ORG_ID}?sId={location_id}"
+
+
 def get_duration_options(max_hours=4, increments_in_hours=0.5):
     duration_options = []
     for hour in range(1, int(max_hours / increments_in_hours) + 1):
@@ -200,9 +275,9 @@ def display_time_range_picker():
         start_datetime = to_pst_datetime(start_time)
     with col2:
         end_time_or_duration = st.radio("End time or Duration", ["End Time", "Duration"],
-                 captions=["Find open courts from [Start Time] to [End Time]",
-                           "Find open courts for [Duration] starting at [Start Time]"],
-                 horizontal=True, )
+                                        captions=["Find open courts from [Start Time] to [End Time]",
+                                                  "Find open courts for [Duration] starting at [Start Time]"],
+                                        horizontal=True)
         if end_time_or_duration == "End Time":
             end_time = st.time_input("End Time", closing_time, step=timedelta(minutes=30))
             end_datetime = to_pst_datetime(end_time)
@@ -308,8 +383,6 @@ def main():
             st.session_state.df_by_location = {}
         if 'compact_view_df' not in st.session_state:
             st.session_state.compact_view_df = None
-        if 'bbc_locations' not in st.session_state:
-            st.session_state.bbc_locations = []
 
         current_datetime = get_default_datetime()
         date_input = st.date_input("Date", current_datetime,
@@ -321,37 +394,58 @@ def main():
 
         update_available_courts_for_date()
 
-        if st.session_state.bbc_locations:
-            st.session_state.locations_filter = st.multiselect("Locations",
-                                                               placeholder="Choose a location",
-                                                               options=st.session_state.bbc_locations,
-                                                               default=st.session_state.bbc_locations)
+        st.session_state.locations_filter = st.multiselect("Locations",
+                                                           placeholder="Choose a location",
+                                                           options=BBCLocation.get_all_locations(),
+                                                           default=BBCLocation.get_default_locations())
         st.divider()
 
         update_compact_view_available_court_times()
 
+        st.info("'✓ / Reserve' only links to the Reservations page on CourtReserve for each location. You'll need to manually set the date and find the available slot to reserve.")
+
         if st.session_state.compact_view_df is not None:
             st.write(f"### Available courts from {get_formatted_time(st.session_state.time_range_filter[0])} to "
                      f"{get_formatted_time(st.session_state.time_range_filter[1])} for {', '.join(st.session_state.locations_filter)}")
-            with st.expander("How do I read this?"):
+            with st.expander("How do I read/use this?"):
                 st.write("- This is a filtered/compact view of the tables in the next section showing court-availability across locations.")
                 st.write("- Each column is a BBC location.")
                 st.write("- Each row lists the courts that should be open for reservation on CourtReserve at that starting time.")
+                st.write("- 'Reserve' only links to the Reservations page on CourtReserve for each location. You'll need to manually set the date and find the available slot to reserve.")
 
-            st.dataframe(st.session_state.compact_view_df)
+            st.dataframe(st.session_state.compact_view_df,
+                         column_config={reserve_button_column_name(location):
+                                            st.column_config.LinkColumn(label="",
+                                                                        display_text="Reserve",
+                                                                        help=f"This just links to the {location} Reservations page on CourtReserve. "
+                                                                             f"You have to set the date in the calendar yourself and find the relevant slot to reserve.")
+                                        for location in st.session_state.locations_filter})
             st.divider()
 
         if st.session_state.df_by_location:
             st.write(f"### Available courts from Opening ({get_formatted_time_by_hour(CLUB_OPENING_HOURS[0])}) to "
                      f"Close ({get_formatted_time_by_hour(CLUB_OPENING_HOURS[1])})")
-            with st.expander("How do I read this?"):
+            with st.expander("How do I read/use this?"):
                 st.write("- These are the non-filtered court-availability views that should resemble the CourtReserve page when you click into specific locations under 'Reservations'.")
-                st.write("- ✓ 07:00 AM - means a court should be open for reservation on CourtReserve with starting time at 07:00 AM.")
+                st.write("- ✓ 07:00 AM - means a court should be open for reservation on CourtReserve with starting time at 07:00 AM. It only links to the Reservations page on CourtReserve for each location. You'll need to manually set the date and find the available slot to reserve.")
                 st.write("- None - means the court is not available to be reserved at that time slot.")
             for location, df in st.session_state.df_by_location.items():
                 st.write(f"#### :green[{location}]")
-                st.dataframe(df)
 
+                # HACK!! to display a clickable <a href='{link}' target='_blank'>{text}</a>
+                # The right way to have clickable links in dataframe is through: df.style.format(make_clickable).
+                # Unfortunately st.dataframe() does not support this and does not render <a> tags properly: https://github.com/streamlit/streamlit/issues/4830
+                # and displaying it in html is not as nice: st.markdown(df_styled.to_html(escape=False, render_links=True), unsafe_allow_html=True)
+                #
+                # Each cell in the dataframe contains f"{link}&{text}".
+                # LinkColumn requires the cell values to be clickable link strings and limits the display_text to be a regex for extracting texts
+                # in order to have cell-dependent texts.
+                # So here we're extracting everything after '&', which should be the label.
+                st.dataframe(df, column_config={column: st.column_config.LinkColumn(column,
+                                                                                    display_text="&(.*)",
+                                                                                    help=f"This just links to the {column} Reservations page on CourtReserve. "
+                                                                                         f"You have to set the date in the calendar yourself and find the relevant slot to reserve.")
+                                                for column in df.columns})
     except Exception as e:
         logger.error(f"{type(e).__name__}: {str(e)}")
         logger.error(traceback.format_exc())  # Print the full traceback

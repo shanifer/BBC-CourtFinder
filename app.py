@@ -272,6 +272,7 @@ def display_time_range_picker():
 
     with col2:
         end_time_or_duration = st.radio("End time or Duration", ["End Time", "Duration"],
+                                        index=1,
                                         captions=["Find open courts from [Start Time] to [End Time]",
                                                   "Find open courts for [Duration] starting at [Start Time]"],
                                         horizontal=True)
@@ -298,7 +299,7 @@ def display_time_range_picker():
                 end_am_pm = st.selectbox("AM/PM", ["AM", "PM"], index=0 if closing_time.hour < 12 else 1, key="end_ampm")
             end_datetime = to_pst_datetime(time(end_hour if end_am_pm == "AM" else end_hour + 12, end_minute))
         else:
-            duration = st.selectbox("Duration (in hours)", options=get_duration_options(), index=None)
+            duration = st.selectbox("Duration (in hours)", options=get_duration_options(), index=1)
             if duration:
                 end_datetime = start_datetime + timedelta(hours=duration)
 
